@@ -39,8 +39,26 @@ def md2typst(
         "-p",
         help='Paper size, e.g. a4, a5, us-letter. Prepends #set page(paper: "...") to output.',
     ),
+    all: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="Convert all .md files in the current directory, each to its own .typ file.",
+    ),
 ):
-    if input is None:
+    if all:
+        md_files = sorted(Path(".").glob("*.md"))
+        if not md_files:
+            typer.echo("No .md files found in the current directory.", err=True)
+            raise typer.Exit(1)
+        for md_file in md_files:
+            typst_text = convert(md_file.read_text())
+            if paper:
+                typst_text = _prepend_page_set(typst_text, paper)
+            dest = md_file.with_suffix(".typ")
+            dest.write_text(typst_text)
+            typer.echo(f"Written to {dest}", err=True)
+    elif input is None:
         if sys.stdin.isatty():
             typer.echo("Reading from stdin… (Ctrl-D to finish)", err=True)
         md_text = sys.stdin.read()
