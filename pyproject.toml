@@ -1,5 +1,5 @@
 [project]
-name = "md2typst"
+name = "mdtyp"
 version = "0.1.0"
 description = "Convert Markdown documents to Typst"
 readme = "README.md"
@@ -15,4 +15,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-md2typst = "md2typst.cli:app"
+mdtyp = "mdtyp.cli:app"

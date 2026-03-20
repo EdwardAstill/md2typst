@@ -1,24 +1,28 @@
 """Markdown to Typst converter using markdown-it-py token stream."""
 
+from __future__ import annotations
+
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 from mdit_py_plugins.dollarmath import dollarmath_plugin
 
-from md2typst.latex2typst import latex_to_typst
+from mdtyp.config import Config
+from mdtyp.latex2typst import latex_to_typst
 
 
-def convert(md_text: str) -> str:
+def convert(md_text: str, config: Config | None = None) -> str:
     md = MarkdownIt().enable("table")
     dollarmath_plugin(md, double_inline=True)
     tokens = md.parse(md_text)
-    ctx = _Ctx()
+    ctx = _Ctx(config or Config())
     _render_tokens(tokens, ctx)
     return ctx.out.strip() + "\n"
 
 
 class _Ctx:
-    def __init__(self):
+    def __init__(self, config: Config):
         self.out = ""
+        self.config = config
         self.list_stack: list[str] = []  # "bullet" | "ordered"
         self.item_first_para: bool = False  # True right after list_item_open
 
@@ -37,14 +41,14 @@ def _render_tokens(tokens: list[Token], ctx: _Ctx):
             level = int(tok.tag[1])
             prefix = "=" * level
             inline = tokens[i + 1]
-            ctx.write(f"\n{prefix} {_render_inline(inline.children or [])}\n\n")
+            ctx.write(f"\n{prefix} {_render_inline(inline.children or [], ctx.config)}\n\n")
             i += 3
             continue
 
         # --- paragraphs ---
         elif t == "paragraph_open":
             inline = tokens[i + 1]
-            text = _render_inline(inline.children or [])
+            text = _render_inline(inline.children or [], ctx.config)
             if ctx.list_stack and ctx.item_first_para:
                 # first paragraph of a list item → emit marker
                 depth = len(ctx.list_stack) - 1
@@ -67,14 +71,22 @@ def _render_tokens(tokens: list[Token], ctx: _Ctx):
         elif t == "fence":
             info = tok.info.strip() if tok.info else ""
             content = tok.content.rstrip("\n")
-            if info:
+            fn = ctx.config.code.block_function
+            if fn:
+                lang_attr = f'lang: "{info}", ' if info else ""
+                ctx.write(f"#{fn}({lang_attr}```\n{content}\n```)\n\n")
+            elif info:
                 ctx.write(f"```{info}\n{content}\n```\n\n")
             else:
                 ctx.write(f"```\n{content}\n```\n\n")
 
         elif t == "code_block":
             content = tok.content.rstrip("\n")
-            ctx.write(f"```\n{content}\n```\n\n")
+            fn = ctx.config.code.block_function
+            if fn:
+                ctx.write(f"#{fn}(```\n{content}\n```)\n\n")
+            else:
+                ctx.write(f"```\n{content}\n```\n\n")
 
         # --- lists ---
         elif t == "bullet_list_open":
@@ -109,13 +121,14 @@ def _render_tokens(tokens: list[Token], ctx: _Ctx):
                         break
                     nesting -= 1
                 elif inner.type == "inline":
-                    content_parts.append(_render_inline(inner.children or []))
+                    content_parts.append(_render_inline(inner.children or [], ctx.config))
                 j += 1
             body = "\n\n".join(content_parts)
-            ctx.write(f"#quote[\n{body}\n]\n\n")
+            fn = ctx.config.blockquote.function
+            ctx.write(f"#{fn}[\n{body}\n]\n\n")
 
         elif t == "hr":
-            ctx.write("#line(length: 100%)\n\n")
+            ctx.write(ctx.config.hr.style + "\n\n")
 
         elif t == "html_block":
             ctx.write(f"/* HTML: {tok.content.strip()} */\n\n")
@@ -127,14 +140,14 @@ def _render_tokens(tokens: list[Token], ctx: _Ctx):
 
         # --- tables ---
         elif t == "table_open":
-            i, table_out = _render_table(tokens, i)
+            i, table_out = _render_table(tokens, i, ctx.config)
             ctx.write(table_out)
             continue
 
         i += 1
 
 
-def _render_table(tokens: list[Token], start: int) -> tuple[int, str]:
+def _render_table(tokens: list[Token], start: int, config: Config) -> tuple[int, str]:
     """Consume table tokens and return (new_index, typst_table_string)."""
     alignments: list[str] = []
     header_cells: list[str] = []
@@ -172,7 +185,7 @@ def _render_table(tokens: list[Token], start: int) -> tuple[int, str]:
             elif not in_body or not alignments:
                 alignments.append("auto")
         elif t == "inline":
-            current_row.append(_render_inline(tokens[i].children or []))
+            current_row.append(_render_inline(tokens[i].children or [], config))
         elif t == "table_close":
             i += 1
             break
@@ -184,10 +197,14 @@ def _render_table(tokens: list[Token], start: int) -> tuple[int, str]:
     lines = ["#table("]
     lines.append(f"  columns: {cols},")
     lines.append(f"  align: ({col_spec},),")
+    if config.table.stroke:
+        lines.append(f"  stroke: {config.table.stroke},")
 
-    # header cells bold
     for cell in header_cells:
-        lines.append(f"  [*{cell}*],")
+        if config.table.header_bold:
+            lines.append(f"  [*{cell}*],")
+        else:
+            lines.append(f"  [{cell}],")
     for row in body_rows:
         for cell in row:
             lines.append(f"  [{cell}],")
@@ -196,7 +213,7 @@ def _render_table(tokens: list[Token], start: int) -> tuple[int, str]:
     return i, "\n".join(lines)
 
 
-def _render_inline(children: list[Token]) -> str:
+def _render_inline(children: list[Token], config: Config) -> str:
     out = ""
     i = 0
     while i < len(children):
@@ -221,7 +238,7 @@ def _render_inline(children: list[Token]) -> str:
             while j < len(children) and children[j].type != "strong_close":
                 inner.append(children[j])
                 j += 1
-            out += f"*{_render_inline(inner)}*"
+            out += f"*{_render_inline(inner, config)}*"
             i = j
 
         elif t == "em_open":
@@ -230,7 +247,7 @@ def _render_inline(children: list[Token]) -> str:
             while j < len(children) and children[j].type != "em_close":
                 inner.append(children[j])
                 j += 1
-            out += f"_{_render_inline(inner)}_"
+            out += f"_{_render_inline(inner, config)}_"
             i = j
 
         elif t == "s_open":
@@ -239,7 +256,7 @@ def _render_inline(children: list[Token]) -> str:
             while j < len(children) and children[j].type != "s_close":
                 inner.append(children[j])
                 j += 1
-            out += f"#strike[{_render_inline(inner)}]"
+            out += f"#strike[{_render_inline(inner, config)}]"
             i = j
 
         elif t == "link_open":
@@ -249,14 +266,19 @@ def _render_inline(children: list[Token]) -> str:
             while j < len(children) and children[j].type != "link_close":
                 inner.append(children[j])
                 j += 1
-            label = _render_inline(inner)
+            label = _render_inline(inner, config)
             out += f'#link("{href}")[{label}]'
             i = j
 
         elif t == "image":
             src = tok.attrGet("src") or ""
             alt = tok.attrGet("alt") or ""
-            out += f'#figure(image("{src}"), caption: [{alt}])'
+            img_cfg = config.image
+            width_arg = f", width: {img_cfg.width}" if img_cfg.width else ""
+            if img_cfg.use_figure:
+                out += f'#figure(image("{src}"{width_arg}), caption: [{alt}])'
+            else:
+                out += f'#image("{src}"{width_arg})'
 
         elif t == "math_inline":
             out += f"${latex_to_typst(tok.content)}$"
