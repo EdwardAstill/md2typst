@@ -213,6 +213,23 @@ def _render_table(tokens: list[Token], start: int, config: Config) -> tuple[int,
     return i, "\n".join(lines)
 
 
+_TYPST_ESCAPE = str.maketrans({
+    "$": r"\$",
+    "*": r"\*",
+    "_": r"\_",
+    "#": r"\#",
+    "@": r"\@",
+    "~": r"\~",
+    "<": r"\<",
+    ">": r"\>",
+})
+
+
+def _escape_typst(text: str) -> str:
+    """Escape characters that have special meaning in Typst markup."""
+    return text.translate(_TYPST_ESCAPE)
+
+
 def _render_inline(children: list[Token], config: Config) -> str:
     out = ""
     i = 0
@@ -221,7 +238,7 @@ def _render_inline(children: list[Token], config: Config) -> str:
         t = tok.type
 
         if t == "text":
-            out += tok.content.replace("$", r"\$")
+            out += _escape_typst(tok.content)
 
         elif t == "softbreak":
             out += " "
