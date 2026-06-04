@@ -37,7 +37,9 @@ _COMMANDS: list[tuple[str, str]] = [
 
     # --- Relations ---
     (r"\leq", "<="),
+    (r"\le", "<="),
     (r"\geq", ">="),
+    (r"\ge", ">="),
     (r"\neq", "!="),
     (r"\approx", "approx"),
     (r"\equiv", "equiv"),
@@ -243,7 +245,9 @@ _RE_CASES = re.compile(
 _MATRIX_DELIMS: dict[str, str] = {
     "pmatrix": '"("',
     "bmatrix": '"["',
+    "Bmatrix": '"{"',
     "vmatrix": '"|"',
+    "Vmatrix": '"||"',
     "matrix": '"("',
 }
 _RE_MATRICES: list[tuple[re.Pattern[str], str]] = [
@@ -330,6 +334,7 @@ def latex_to_typst(latex: str) -> str:
     s = _translate_environments(s)
     s = _translate_commands(s)
     s = _translate_scripts(s)
+    s = _separate_uppercase_products_before_calls(s)
     s = _quote_multichar_identifiers(s)
     s = _RE_MULTI_SPACE.sub(" ", s)
     return s.strip()
@@ -345,17 +350,73 @@ def _translate_environments(s: str) -> str:
 
     Must run first: environments contain raw LaTeX that later stages will process.
     """
-    s = _RE_ALIGNED.sub(lambda m: _convert_aligned(m.group(2)), s)
-    s = _RE_CASES.sub(lambda m: _convert_cases(m.group(1)), s)
+    s = _RE_ALIGNED.sub(lambda m: _pad_math_replacement(m, _convert_aligned(m.group(2))), s)
+    s = _RE_CASES.sub(lambda m: _pad_math_replacement(m, _convert_cases(m.group(1))), s)
     for pattern, delim in _RE_MATRICES:
-        s = pattern.sub(lambda m, d=delim: _convert_matrix(m.group(1), d), s)
+        s = pattern.sub(
+            lambda m, d=delim: _pad_math_replacement(m, _convert_matrix(m.group(1), d)),
+            s,
+        )
     return s
 
 
+def _pad_math_replacement(m: re.Match[str], replacement: str) -> str:
+    """Add spaces when replacing an environment adjacent to math atoms."""
+    before = " " if m.start() > 0 and _needs_math_space(m.string[m.start() - 1]) else ""
+    after = " " if m.end() < len(m.string) and _needs_math_space(m.string[m.end()]) else ""
+    return before + replacement + after
+
+
+def _needs_math_space(ch: str) -> bool:
+    return ch.isalnum() or ch in "_)}]"
+
+
+def _split_latex_rows(body: str) -> list[str]:
+    """Split matrix/alignment rows on LaTeX row breaks.
+
+    Accepts both proper ``\\\\`` separators and a common Markdown typo where a
+    single trailing backslash before a newline is used as the row separator.
+    """
+    rows: list[str] = []
+    buf: list[str] = []
+    i = 0
+
+    def flush() -> None:
+        row = "".join(buf).strip()
+        if row:
+            rows.append(row)
+        buf.clear()
+
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":
+            if i + 1 < len(body) and body[i + 1] == "\\":
+                flush()
+                i += 2
+                while i < len(body) and body[i] in " \t\r\n":
+                    i += 1
+                continue
+            j = i + 1
+            while j < len(body) and body[j] in " \t\r":
+                j += 1
+            if j == len(body) or body[j] == "\n":
+                flush()
+                i = j + 1 if j < len(body) else j
+                continue
+        buf.append(ch)
+        i += 1
+    flush()
+
+    if len(rows) == 1 and "\n" in rows[0]:
+        line_rows = [line.strip() for line in rows[0].splitlines() if line.strip()]
+        if len(line_rows) > 1:
+            return line_rows
+    return rows
+
+
 def _convert_aligned(body: str) -> str:
-    lines = body.strip().split(r"\\")
     converted = []
-    for line in lines:
+    for line in _split_latex_rows(body):
         line = line.strip()
         if line:
             line = line.replace("&", "")
@@ -364,9 +425,8 @@ def _convert_aligned(body: str) -> str:
 
 
 def _convert_cases(body: str) -> str:
-    lines = body.strip().split(r"\\")
     parts = []
-    for line in lines:
+    for line in _split_latex_rows(body):
         line = line.strip()
         if line:
             chunks = line.split("&")
@@ -380,9 +440,8 @@ def _convert_cases(body: str) -> str:
 
 
 def _convert_matrix(body: str, delim: str) -> str:
-    rows = body.strip().split(r"\\")
     row_strs = []
-    for row in rows:
+    for row in _split_latex_rows(body):
         row = row.strip()
         if row:
             cells = [c.strip() for c in row.split("&")]
@@ -410,18 +469,29 @@ def _translate_commands(s: str) -> str:
         ("frac", "frac"), ("dfrac", "frac"), ("tfrac", "frac"), ("binom", "binom"),
     ]:
         s = _replace_cmd_two_args(s, latex_name, typst_name)
+    for latex_name, typst_name in [
+        ("frac", "frac"), ("dfrac", "frac"), ("tfrac", "frac"),
+    ]:
+        s = _replace_cmd_two_bare_atoms(s, latex_name, typst_name)
 
     # Square root: \sqrt[n]{x} → root(n, x), \sqrt{x} → sqrt(x)
     s = _replace_sqrt(s)
 
     # One-arg accent/decoration commands
-    for latex_name, typst_name in [
+    accent_commands = [
         ("hat", "hat"), ("bar", "macron"), ("vec", "arrow"),
         ("dot", "dot"), ("ddot", "diaer"), ("tilde", "tilde"),
         ("overline", "overline"), ("underline", "underline"),
         ("overbrace", "overbrace"), ("underbrace", "underbrace"),
-    ]:
+    ]
+    for latex_name, typst_name in accent_commands:
         s = _replace_cmd_one_arg(s, latex_name, typst_name)
+    for latex_name, typst_name in accent_commands:
+        s = _replace_cmd_bare_atom(s, latex_name, typst_name)
+
+    # Extensible arrows: \xrightarrow{N} → arrow.r^(N)
+    s = _replace_cmd_one_arg_template(s, "xrightarrow", "arrow.r^({arg})")
+    s = _replace_cmd_one_arg_template(s, "xleftarrow", "arrow.l^({arg})")
 
     # \text{...} → "..."
     s = _RE_TEXT.sub(lambda m: f'"{m.group(1)}"', s)
@@ -463,8 +533,8 @@ def _replace_with_spacing(
 ) -> str:
     """Replace a LaTeX command, adding spaces to prevent identifier merging."""
     def _padded(m: re.Match[str]) -> str:
-        before = " " if m.start() > 0 and m.string[m.start() - 1].isalpha() else ""
-        after = " " if m.end() < len(m.string) and m.string[m.end()].isalpha() else ""
+        before = " " if m.start() > 0 and m.string[m.start() - 1].isalnum() else ""
+        after = " " if m.end() < len(m.string) and m.string[m.end()].isalnum() else ""
         return before + typst_rep + after
     return pattern.sub(_padded, s)
 
@@ -493,6 +563,91 @@ def _replace_cmd_one_arg(s: str, latex_name: str, typst_name: str) -> str:
     return s
 
 
+def _replace_cmd_one_arg_template(s: str, latex_name: str, template: str) -> str:
+    """Replace ``\\cmd{arg}`` using a format template containing ``{arg}``."""
+    pattern = re.compile(rf"\\{latex_name}\{{")
+    while (m := pattern.search(s)):
+        start = m.start()
+        arg, end = _extract_braced(s, m.end() - 1)
+        if arg is None:
+            break
+        prefix = " " if start > 0 and _needs_math_space(s[start - 1]) else ""
+        suffix = " " if end < len(s) and (s[end].isalpha() or s[end] == "\\") else ""
+        s = s[:start] + prefix + template.format(arg=arg) + suffix + s[end:]
+    return s
+
+
+def _replace_cmd_bare_atom(s: str, latex_name: str, typst_name: str) -> str:
+    """Replace ``\\cmd x`` → ``typst_name(x)`` for accent-style commands."""
+    pattern = re.compile(rf"\\{latex_name}(?![A-Za-z])")
+    while (m := pattern.search(s)):
+        start = m.start()
+        atom, end = _extract_math_atom(s, m.end())
+        if atom is None:
+            break
+        prefix = " " if start > 0 and s[start - 1].isalpha() else ""
+        s = s[:start] + f"{prefix}{typst_name}({atom})" + s[end:]
+    return s
+
+
+def _extract_math_atom(s: str, pos: int) -> tuple[str | None, int]:
+    """Extract the next simple LaTeX math atom, including attached scripts."""
+    while pos < len(s) and s[pos].isspace():
+        pos += 1
+    if pos >= len(s):
+        return None, pos
+    if s[pos] == "{":
+        atom, end = _extract_braced(s, pos)
+        if atom is None:
+            return None, pos
+        return atom, end
+    end = _consume_math_atom_head(s, pos)
+    if end == pos:
+        return None, pos
+    end = _consume_attached_scripts(s, end)
+    return s[pos:end], end
+
+
+def _consume_math_atom_head(s: str, pos: int) -> int:
+    if pos >= len(s):
+        return pos
+    if s[pos] == "\\":
+        j = pos + 1
+        while j < len(s) and s[j].isalpha():
+            j += 1
+        return j if j > pos + 1 else min(pos + 2, len(s))
+    if s[pos].isalpha():
+        j = pos
+        while j < len(s) and s[j].isalnum():
+            j += 1
+        word = s[pos:j]
+        if word in _TYPST_MATH_IDENTS:
+            while j < len(s) and s[j] == ".":
+                k = j + 1
+                while k < len(s) and s[k].isalpha():
+                    k += 1
+                if k == j + 1:
+                    break
+                j = k
+            return j
+    return pos + 1
+
+
+def _consume_attached_scripts(s: str, pos: int) -> int:
+    while pos < len(s) and s[pos] in ("_", "^"):
+        pos += 1
+        if pos >= len(s):
+            break
+        if s[pos] == "{":
+            _, end = _extract_braced(s, pos)
+            if end == pos:
+                break
+            pos = end
+        else:
+            pos = _consume_math_atom_head(s, pos)
+    return pos
+
+
 def _replace_cmd_two_args(s: str, latex_name: str, typst_name: str) -> str:
     """Replace ``\\cmd{a}{b}`` → ``typst_name(a, b)``."""
     pattern = re.compile(rf"\\{latex_name}\{{")
@@ -502,6 +657,22 @@ def _replace_cmd_two_args(s: str, latex_name: str, typst_name: str) -> str:
         if arg1 is None:
             break
         arg2, after2 = _extract_braced(s, after1)
+        if arg2 is None:
+            break
+        prefix = " " if start > 0 and s[start - 1].isalpha() else ""
+        s = s[:start] + f"{prefix}{typst_name}({arg1}, {arg2})" + s[after2:]
+    return s
+
+
+def _replace_cmd_two_bare_atoms(s: str, latex_name: str, typst_name: str) -> str:
+    """Replace compact two-atom commands like ``\\frac12`` → ``frac(1, 2)``."""
+    pattern = re.compile(rf"\\{latex_name}(?![A-Za-z])")
+    while (m := pattern.search(s)):
+        start = m.start()
+        arg1, after1 = _extract_math_atom(s, m.end())
+        if arg1 is None:
+            break
+        arg2, after2 = _extract_math_atom(s, after1)
         if arg2 is None:
             break
         prefix = " " if start > 0 and s[start - 1].isalpha() else ""
@@ -528,7 +699,10 @@ def _replace_sqrt(s: str) -> str:
                 break
             s = s[: m.start()] + f"sqrt({arg})" + s[after:]
         else:
-            break
+            arg, after = _extract_math_atom(s, pos)
+            if arg is None:
+                break
+            s = s[: m.start()] + f"sqrt({arg})" + s[after:]
     return s
 
 
@@ -580,16 +754,39 @@ def _translate_scripts(s: str) -> str:
     result: list[str] = []
     i = 0
     while i < len(s):
-        if i < len(s) - 1 and s[i] in ("_", "^") and s[i + 1] == "{":
+        if i < len(s) - 1 and s[i] in ("_", "^"):
             marker = s[i]
-            content, end = _extract_braced(s, i + 1)
-            if content is not None:
-                result.append(f"{marker}({content})")
-                i = end
-                continue
+            if s[i + 1] == "{":
+                content, end = _extract_braced(s, i + 1)
+                if content is not None:
+                    result.append(f"{marker}({content})")
+                    i = end
+                    continue
+            elif s[i + 1] != "(":
+                end = _consume_math_atom_head(s, i + 1)
+                if end > i + 1:
+                    result.append(s[i:end])
+                    i = end
+                    if i < len(s) and (s[i].isalnum() or s[i] == "\\"):
+                        result.append(" ")
+                    continue
         result.append(s[i])
         i += 1
     return "".join(result)
+
+
+def _separate_uppercase_products_before_calls(s: str) -> str:
+    """Split uppercase products that would otherwise look like unknown calls.
+
+    LaTeX often writes matrix products compactly, e.g. ``B^TDB(s,t)`` for
+    ``B^T D B(s,t)``. Typst reads ``DB(s,t)`` as a function call, so add the
+    missing product spacing for all-caps runs before ``(``.
+    """
+    return re.sub(
+        r"(?<![A-Za-z])([A-Z]{2,})(?=\()",
+        lambda m: " ".join(m.group(1)),
+        s,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -615,10 +812,10 @@ def _quote_multichar_identifiers(s: str) -> str:
             result.append(s[i : j + 1])
             i = j + 1
             continue
-        # Collect a run of letters.
+        # Collect an identifier-like run beginning with a letter.
         if s[i].isalpha():
             j = i
-            while j < len(s) and s[j].isalpha():
+            while j < len(s) and s[j].isalnum():
                 j += 1
             word = s[i:j]
             # Skip whitespace, then check whether a '(' follows (function call).

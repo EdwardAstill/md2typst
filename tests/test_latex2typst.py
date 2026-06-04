@@ -13,7 +13,10 @@ from mdtyp.latex2typst import latex_to_typst
     (r"\dfrac{x}{y}", "frac(x, y)"),
     (r"\tfrac{a}{b}", "frac(a, b)"),
     (r"\frac{1}{\sqrt{2}}", "frac(1, sqrt(2))"),
+    (r"\frac12", "frac(1, 2)"),
+    (r"\frac14", "frac(1, 4)"),
     (r"\sqrt{x}", "sqrt(x)"),
+    (r"\sqrt3", "sqrt(3)"),
     (r"\sqrt[3]{x}", "root(3, x)"),
     (r"\sqrt{a^2 + b^2}", "sqrt(a^2 + b^2)"),
 ])
@@ -41,7 +44,9 @@ def test_greek(latex: str, expected: str) -> None:
 
 @pytest.mark.parametrize("latex, expected", [
     (r"\leq", "<="),
+    (r"\le", "<="),
     (r"\geq", ">="),
+    (r"\ge", ">="),
     (r"\neq", "!="),
     (r"\approx", "approx"),
     (r"\equiv", "equiv"),
@@ -57,6 +62,7 @@ def test_greek(latex: str, expected: str) -> None:
     (r"\cdot", "dot"),
     (r"\times", "times"),
     (r"\pm", "plus.minus"),
+    (r"\pm1", "plus.minus 1"),
 ])
 def test_operators_and_relations(latex: str, expected: str) -> None:
     assert latex_to_typst(latex) == expected
@@ -96,7 +102,9 @@ def test_big_operators(latex: str, expected: str) -> None:
     ("x_{12}", "x_(12)"),
     ("x^{2n}", "x^(2n)"),
     ("a_{i,j}^{k+1}", "a_(i,j)^(k+1)"),
+    ("x_{B1}", 'x_("B1")'),
     ("x_i^2", "x_i^2"),
+    ("B^TDB(s,t)", "B^T D B(s,t)"),
 ])
 def test_scripts(latex: str, expected: str) -> None:
     assert latex_to_typst(latex) == expected
@@ -111,6 +119,10 @@ def test_scripts(latex: str, expected: str) -> None:
     (r"\dot{x}", "dot(x)"),
     (r"\ddot{x}", "diaer(x)"),
     (r"\tilde{n}", "tilde(n)"),
+    (r"\hat K", "hat(K)"),
+    (r"\bar d", "macron(d)"),
+    (r"\dot d_n", "dot(d_n)"),
+    (r"\ddot d_{n+1}", "diaer(d_(n+1))"),
 ])
 def test_accents(latex: str, expected: str) -> None:
     assert latex_to_typst(latex) == expected
@@ -127,6 +139,11 @@ def test_accents(latex: str, expected: str) -> None:
 ])
 def test_font_commands(latex: str, expected: str) -> None:
     assert latex_to_typst(latex) == expected
+
+
+def test_extensible_arrow_with_label() -> None:
+    result = latex_to_typst(r"\text{DOFs}\xrightarrow{N}\text{field}")
+    assert result == '"DOFs" arrow.r^(N) "field"'
 
 
 # --- Blackboard bold ---
@@ -163,6 +180,24 @@ def test_bmatrix() -> None:
     latex = r"\begin{bmatrix} a & b \\ c & d \end{bmatrix}"
     result = latex_to_typst(latex)
     assert result == 'mat(delim: "[", a, b; c, d)'
+
+
+def test_bmatrix_after_symbol_gets_separator() -> None:
+    latex = r"k_e\begin{bmatrix}1&-1\\-1&1\end{bmatrix}"
+    result = latex_to_typst(latex)
+    assert result == 'k_e mat(delim: "[", 1, -1; -1, 1)'
+
+
+def test_bmatrix_accepts_single_trailing_backslash_rows() -> None:
+    latex = "\\begin{bmatrix}\n1&-1\\\n-1&1\n\\end{bmatrix}"
+    result = latex_to_typst(latex)
+    assert result == 'mat(delim: "[", 1, -1; -1, 1)'
+
+
+def test_Bmatrix() -> None:
+    latex = r"\begin{Bmatrix} d_f \\ d_s \end{Bmatrix}"
+    result = latex_to_typst(latex)
+    assert result == 'mat(delim: "{", d_f; d_s)'
 
 
 def test_pmatrix() -> None:

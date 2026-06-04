@@ -70,6 +70,7 @@ mdtyp input.md              # writes input.typ
 mdtyp input.md -o out.typ   # explicit output path
 mdtyp input.md --stdout     # print to stdout
 mdtyp input.md --pdf        # also compile to PDF with typst
+mdtyp input.md --latex      # writes input.tex
 ```
 
 Convert all `.md` files in the current directory:
@@ -77,6 +78,7 @@ Convert all `.md` files in the current directory:
 ```bash
 mdtyp --all
 mdtyp --all --pdf
+mdtyp --all --latex
 ```
 
 Read from stdin:
@@ -85,6 +87,7 @@ Read from stdin:
 echo "# Hello" | mdtyp
 echo "# Hello" | mdtyp -o hello.typ
 cat notes.md | mdtyp --stdout
+cat notes.md | mdtyp --latex --stdout
 ```
 
 Set paper size:
@@ -99,6 +102,20 @@ Use a custom config file:
 ```bash
 mdtyp input.md --config my-config.toml
 ```
+
+---
+
+## Markdown → LaTeX output
+
+Use `--latex` to render Markdown to LaTeX instead of Typst:
+
+```bash
+mdtyp input.md --latex             # writes input.tex
+mdtyp input.md --latex --stdout    # print LaTeX to stdout
+mdtyp --all --latex                # convert all .md files to .tex
+```
+
+The LaTeX renderer preserves Markdown math as LaTeX math and maps common Markdown features to standard LaTeX constructs, including sections, emphasis, lists, blockquotes, tables, links, images, and verbatim code blocks. Documents that use links, images, or strikethrough may need the usual LaTeX packages such as `hyperref`, `graphicx`, or `ulem` in the surrounding document preamble.
 
 ---
 
